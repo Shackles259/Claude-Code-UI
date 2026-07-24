@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build output
+dist/
+**/dist/
+build/
+*.tsbuildinfo
+
+# Bundled portable node runtime (downloaded during packaging)
+packaging/node/
+**/node/bin/node
+**/node/node.exe
+
+# Runtime data
+workspace/*
+!workspace/.gitkeep
+logs/*
+!logs/.gitkeep
+config/config.json
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Tooling
+.zcode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# SQLite
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-journal
+data/
