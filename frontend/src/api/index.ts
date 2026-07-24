@@ -77,6 +77,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ path }),
     }),
+  revealProject: (projectId: string) =>
+    request<{ ok: boolean }>(`/api/projects/${projectId}/reveal`, { method: 'POST' }),
+  revealFile: (projectId: string, path: string) =>
+    request<{ ok: boolean }>(`/api/projects/${projectId}/reveal-file`, {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
 
   // Git
   gitStatus: (projectId: string) =>

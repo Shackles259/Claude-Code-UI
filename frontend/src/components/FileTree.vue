@@ -110,6 +110,28 @@ async function deleteSelected(): Promise<void> {
   }
 }
 
+async function revealProjectRoot(): Promise<void> {
+  try {
+    await api.revealProject(props.projectId);
+    message.success('已在文件管理器中打开');
+  } catch (err) {
+    message.error(String(err));
+  }
+}
+
+async function revealSelected(): Promise<void> {
+  if (selectedKeys.value.length === 0) {
+    await revealProjectRoot();
+    return;
+  }
+  try {
+    await api.revealFile(props.projectId, selectedKeys.value[0]);
+    message.success('已在文件管理器中定位');
+  } catch (err) {
+    message.error(String(err));
+  }
+}
+
 watch(() => props.activePath, (p) => {
   if (p) selectedKeys.value = [p];
 });
@@ -120,6 +142,7 @@ watch(() => props.activePath, (p) => {
     <div class="tree-toolbar">
       <NInput v-model:value="filter" size="tiny" placeholder="过滤..." clearable />
       <NSpace :size="2">
+        <NButton size="tiny" quaternary @click="revealSelected" :title="selectedKeys.length ? '在文件夹中显示' : '打开项目目录'">📁</NButton>
         <NButton size="tiny" quaternary @click="refresh" title="刷新">↻</NButton>
         <NPopconfirm v-if="selectedKeys.length" @positive-click="deleteSelected">
           <template #trigger>

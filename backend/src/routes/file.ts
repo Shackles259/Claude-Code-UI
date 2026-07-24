@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import {
   readTree,
   readFileContent,
@@ -11,6 +12,26 @@ import {
   safeResolve,
 } from '../services/file.js';
 import { getProject } from '../services/project.js';
+
+/**
+ * Open a directory (or a file's containing folder) in the OS file manager.
+ * Cross-platform: Finder (macOS), Explorer (Windows), xdg-open (Linux).
+ */
+function revealInFileManager(target: string, isFile: boolean): void {
+  const dir = isFile ? path.dirname(target) : target;
+  switch (process.platform) {
+    case 'darwin':
+      // `open -R` reveals the file in Finder; for a dir, just `open`.
+      spawn('open', isFile ? ['-R', target] : [dir], { detached: true, stdio: 'ignore' }).unref();
+      break;
+    case 'win32':
+      // explorer selects the file if given, or opens the folder.
+      spawn('explorer.exe', [target], { detached: true, stdio: 'ignore' }).unref();
+      break;
+    default:
+      spawn('xdg-open', [dir], { detached: true, stdio: 'ignore' }).unref();
+  }
+}
 
 function resolveInProject(projectId: string, target: string | undefined): { projectPath: string; abs: string } | { error: string; code: number } {
   const project = getProject(projectId);
@@ -91,6 +112,32 @@ export async function fileRoutes(app: FastifyInstance): Promise<void> {
     const toRes = resolveInProject(projectId, body.to);
     if ('error' in toRes) return reply.code(toRes.code).send({ error: toRes.error });
     renamePath(fromRes.abs, toRes.abs);
+    return { ok: true };
+  });
+
+  // Reveal the project root directory in the OS file manager.
+  app.post('/api/projects/:projectId/reveal', async (req, reply) => {
+    const { projectId } = req.params as { projectId: string };
+    const project = getProject(projectId);
+    if (!project) return reply.code(404).send({ error: 'Project not found' });
+    if (!fs.existsSync(project.path)) {
+      return reply.code(404).send({ error: '项目目录不存在' });
+    }
+    revealInFileManager(project.path, false);
+    return { ok: true };
+  });
+
+  // Reveal a specific file/dir inside the project in the OS file manager.
+  app.post('/api/projects/:projectId/reveal-file', async (req, reply) => {
+    const { projectId } = req.params as { projectId: string };
+    const body = req.body as { path: string };
+    const res = resolveInProject(projectId, body.path);
+    if ('error' in res) return reply.code(res.code).send({ error: res.error });
+    if (!fs.existsSync(res.abs)) {
+      return reply.code(404).send({ error: '路径不存在' });
+    }
+    const stat = fs.statSync(res.abs);
+    revealInFileManager(res.abs, stat.isFile());
     return { ok: true };
   });
 }

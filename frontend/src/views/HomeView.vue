@@ -9,6 +9,7 @@ import {
 import AppLayout from '@/components/AppLayout.vue';
 import { useProjectStore } from '@/stores/project';
 import { useSessionStore } from '@/stores/session';
+import { api } from '@/api';
 
 const router = useRouter();
 const message = useMessage();
@@ -62,6 +63,15 @@ async function deleteProject(id: string): Promise<void> {
   try {
     await projectStore.remove(id);
     message.success('项目已删除');
+  } catch (err) {
+    message.error(String(err));
+  }
+}
+
+async function revealProject(id: string): Promise<void> {
+  try {
+    await api.revealProject(id);
+    message.success('已在文件管理器中打开');
   } catch (err) {
     message.error(String(err));
   }
@@ -123,6 +133,7 @@ function formatTime(t: string | null): string {
                   <NText depth="3" style="font-size: 12px;">
                     最近打开: {{ formatTime(p.lastOpened) }}
                   </NText>
+                  <NButton size="tiny" quaternary @click.stop="revealProject(p.id)">📁 打开目录</NButton>
                   <NPopconfirm @positive-click.stop="deleteProject(p.id)">
                     <template #trigger>
                       <NButton size="tiny" quaternary type="error" @click.stop>删除</NButton>
