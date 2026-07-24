@@ -46,15 +46,37 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
-      - name: Install dependencies
+      - name: Install dependencies (root workspaces)
         run: npm ci
 
       - name: Build frontend & backend
         run: npm run build
 
-      # ---- Determine portable Node runtime to bundle ----
+      # ---- Stage the package skeleton under build/<asset_name> ----
+      - name: Stage package skeleton
+        shell: bash
+        run: |
+          ROOT="build/${{ matrix.asset_name }}"
+          mkdir -p "$ROOT/server" "$ROOT/web" "$ROOT/node"
+          cp -R backend/dist "$ROOT/server/dist"
+          cp backend/package.json "$ROOT/server/package.json"
+          cp -R frontend/dist "$ROOT/web/dist"
+          cp packaging/README.txt "$ROOT/README.txt"
+
+      # ---- Install backend runtime deps into the staged package dir ----
+      # Production-only install picks up the correct platform native modules
+      # (better-sqlite3) for THIS runner's OS/arch. Use absolute paths so we
+      # never depend on the current working directory for copies.
+      - name: Install backend runtime deps
+        shell: bash
+        run: |
+          ROOT="$GITHUB_WORKSPACE/build/${{ matrix.asset_name }}"
+          cd "$ROOT/server"
+          npm install --omit=dev --no-audit --no-fund
+          echo "Installed $(ls node_modules | wc -l) packages"
+
+      # ---- Download portable Node runtime to bundle ----
       - name: Determine Node runtime archive
         id: node_archive
         shell: bash
@@ -74,94 +96,75 @@ jobs:
           fi
           echo "dirname=node-${VERSION}-${ARCH}" >> $GITHUB_OUTPUT
 
-      - name: Download portable Node runtime
-        shell: bash
-        run: |
-          mkdir -p build/noderoot
-          cd build/noderoot
-          if [ "${{ steps.node_archive.outputs.ext }}" = "zip" ]; then
-            curl -L "${{ steps.node_archive.outputs.url }}" -o node.zip
-            unzip -q node.zip
-            # Flatten: move archive contents up.
-            mv ${{ steps.node_archive.outputs.dirname }}/* .
-          else
-            curl -L "${{ steps.node_archive.outputs.url }}" | tar xz --strip-components=1
-          fi
-          # Sanity check.
-          ls bin/node 2>/dev/null || ls node.exe 2>/dev/null || { echo "Node binary not found after extract"; exit 1; }
-
-      # ---- Install backend runtime deps into the package dir ----
-      # We install production-only directly into the staged package, so the
-      # final node_modules contains exactly the runtime deps (with the correct
-      # platform native modules like better-sqlite3), nothing else.
-      - name: Stage package skeleton
-        shell: bash
-        run: |
-          ROOT="build/${{ matrix.asset_name }}"
-          mkdir -p "$ROOT/server" "$ROOT/web" "$ROOT/node/bin"
-          cp -R backend/dist "$ROOT/server/dist"
-          cp backend/package.json "$ROOT/server/package.json"
-          cp -R frontend/dist "$ROOT/web/dist"
-          cp packaging/README.txt "$ROOT/README.txt"
-
-      - name: Install backend runtime deps (unix)
+      - name: Download portable Node runtime (unix)
         if: matrix.platform != 'windows'
         shell: bash
         run: |
-          ROOT="build/${{ matrix.asset_name }}"
-          cd "$ROOT/server"
-          npm install --omit=dev --no-audit --no-fund
-          # Place portable node binary into node/bin.
-          cp -R ../../noderoot/bin/* "$ROOT/node/bin/"
-          cp ../../noderoot/LICENSE "$ROOT/node/" 2>/dev/null || true
-          # Launcher script.
-          cp ../../../scripts/start.sh "$ROOT/start"
-          chmod +x "$ROOT/start"
+          ROOT="$GITHUB_WORKSPACE/build/${{ matrix.asset_name }}"
+          mkdir -p "$ROOT/node/bin"
+          curl -L "${{ steps.node_archive.outputs.url }}" | tar xz --strip-components=1 -C "$ROOT/node/bin"
+          # Verify the binary landed.
+          test -f "$ROOT/node/bin/bin/node" || { echo "node binary missing"; ls -R "$ROOT/node/bin" | head; exit 1; }
 
-      - name: Install backend runtime deps (windows)
+      - name: Download portable Node runtime (windows)
         if: matrix.platform == 'windows'
         shell: bash
         run: |
-          ROOT="build/${{ matrix.asset_name }}"
-          cd "$ROOT/server"
-          npm install --omit=dev --no-audit --no-fund
-          # Place portable node binary (node.exe) into node/.
-          cp ../../noderoot/node.exe "$ROOT/node/node.exe" 2>/dev/null || cp ../../noderoot/*.exe "$ROOT/node/"
-          cp ../../../scripts/start.bat "$ROOT/start.bat"
+          ROOT="$GITHUB_WORKSPACE/build/${{ matrix.asset_name }}"
+          mkdir -p "$ROOT/node"
+          curl -L "${{ steps.node_archive.outputs.url }}" -o /tmp/node.zip
+          unzip -q /tmp/node.zip -d /tmp/node-extract
+          cp /tmp/node-extract/${{ steps.node_archive.outputs.dirname }}/node.exe "$ROOT/node/node.exe"
+          test -f "$ROOT/node/node.exe" || { echo "node.exe missing"; exit 1; }
 
-      # ---- Sanity check the staged server can boot ----
+      # ---- Add launcher scripts ----
+      - name: Add launcher scripts (unix)
+        if: matrix.platform != 'windows'
+        shell: bash
+        run: |
+          ROOT="$GITHUB_WORKSPACE/build/${{ matrix.asset_name }}"
+          cp "$GITHUB_WORKSPACE/scripts/start.sh" "$ROOT/start"
+          chmod +x "$ROOT/start"
+
+      - name: Add launcher scripts (windows)
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: |
+          ROOT="$GITHUB_WORKSPACE/build/${{ matrix.asset_name }}"
+          cp "$GITHUB_WORKSPACE/scripts/start.bat" "$ROOT/start.bat"
+
+      # ---- Smoke test: the staged server actually boots ----
       - name: Smoke test server boots
         shell: bash
         env:
-          CLAUDE_UI_ROOT: build/${{ matrix.asset_name }}
+          CLAUDE_UI_ROOT: ${{ github.workspace }}/build/${{ matrix.asset_name }}
           PORT: '3999'
         run: |
-          ROOT="build/${{ matrix.asset_name }}"
-          SERVER="$ROOT/server/dist/server.js"
-          # Use the system node here (CI), not the bundled one.
-          node "$SERVER" > /tmp/smoke.log 2>&1 &
+          ROOT="$GITHUB_WORKSPACE/build/${{ matrix.asset_name }}"
+          node "$ROOT/server/dist/server.js" > /tmp/smoke.log 2>&1 &
           SVPID=$!
-          sleep 6
+          sleep 8
           if curl -s http://localhost:3999/api/health | grep -q '"ok":true'; then
-            echo "Server smoke test PASSED"
+            echo "Smoke test PASSED"
           else
-            echo "Server smoke test FAILED"; cat /tmp/smoke.log; exit 1
+            echo "Smoke test FAILED — log:"; cat /tmp/smoke.log; exit 1
           fi
           kill $SVPID 2>/dev/null || true
 
       # ---- Archive ----
       - name: Archive (tar.gz)
         if: matrix.archive == 'tar.gz'
+        shell: bash
         run: |
-          cd build
-          tar czf "../${{ matrix.asset_name }}.tar.gz" "${{ matrix.asset_name }}"
+          cd "$GITHUB_WORKSPACE/build"
+          tar czf "$GITHUB_WORKSPACE/${{ matrix.asset_name }}.tar.gz" "${{ matrix.asset_name }}"
 
       - name: Archive (zip)
         if: matrix.archive == 'zip'
         shell: bash
         run: |
-          cd build
-          7z a "../${{ matrix.asset_name }}.zip" "${{ matrix.asset_name }}"
+          cd "$GITHUB_WORKSPACE/build"
+          7z a "$GITHUB_WORKSPACE/${{ matrix.asset_name }}.zip" "${{ matrix.asset_name }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
