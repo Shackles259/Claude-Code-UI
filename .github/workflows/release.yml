@@ -94,7 +94,9 @@ jobs:
           mkdir -p "$ROOT/node"
           curl -L "${{ steps.node_archive.outputs.url }}" -o /tmp/node.zip
           unzip -q /tmp/node.zip -d /tmp/node-extract
-          cp /tmp/node-extract/${{ steps.node_archive.outputs.dirname }}/node.exe "$ROOT/node/node.exe"
+          # Copy the ENTIRE node directory (node.exe + node_modules with npm),
+          # so the bundled npm CLI is available for native module compilation.
+          cp -R /tmp/node-extract/${{ steps.node_archive.outputs.dirname }}/* "$ROOT/node/"
           test -f "$ROOT/node/node.exe" || { echo "node.exe missing"; exit 1; }
           "$ROOT/node/node.exe" --version
 
