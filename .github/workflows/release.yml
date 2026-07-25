@@ -2,8 +2,8 @@ name: Release
 
 # Produces three self-contained packages (macOS / Windows / Linux) on tag push
 # or manual dispatch. Each package bundles a portable Node runtime + the
-# compiled server (with platform-specific native modules) + the frontend build,
-# so end users need nothing preinstalled except the Claude CLI itself.
+# compiled server (with platform-specific native modules compiled against the
+# BUNDLED node, so ABI matches at runtime) + the frontend build.
 
 on:
   push:
@@ -42,7 +42,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 20
+      # Use a system node just for the initial build (vite/tsc). The bundled
+      # runtime is downloaded separately below and used to compile native addons
+      # so their ABI matches what ships in the package.
+      - name: Setup Node.js 20 (build only)
         uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -53,30 +56,7 @@ jobs:
       - name: Build frontend & backend
         run: npm run build
 
-      # ---- Stage the package skeleton under build/<asset_name> ----
-      - name: Stage package skeleton
-        shell: bash
-        run: |
-          ROOT="build/${{ matrix.asset_name }}"
-          mkdir -p "$ROOT/server" "$ROOT/web" "$ROOT/node"
-          cp -R backend/dist "$ROOT/server/dist"
-          cp backend/package.json "$ROOT/server/package.json"
-          cp -R frontend/dist "$ROOT/web/dist"
-          cp packaging/README.txt "$ROOT/README.txt"
-
-      # ---- Install backend runtime deps into the staged package dir ----
-      # Production-only install picks up the correct platform native modules
-      # (better-sqlite3) for THIS runner's OS/arch. Use absolute paths so we
-      # never depend on the current working directory for copies.
-      - name: Install backend runtime deps
-        shell: bash
-        run: |
-          ROOT="$GITHUB_WORKSPACE/build/${{ matrix.asset_name }}"
-          cd "$ROOT/server"
-          npm install --omit=dev --no-audit --no-fund
-          echo "Installed $(ls node_modules | wc -l) packages"
-
-      # ---- Download portable Node runtime to bundle ----
+      # ---- Download the portable Node runtime that will ship in the package ----
       - name: Determine Node runtime archive
         id: node_archive
         shell: bash
@@ -103,8 +83,8 @@ jobs:
           ROOT="$GITHUB_WORKSPACE/build/${{ matrix.asset_name }}"
           mkdir -p "$ROOT/node/bin"
           curl -L "${{ steps.node_archive.outputs.url }}" | tar xz --strip-components=1 -C "$ROOT/node/bin"
-          # Verify the binary landed.
-          test -f "$ROOT/node/bin/bin/node" || { echo "node binary missing"; ls -R "$ROOT/node/bin" | head; exit 1; }
+          test -f "$ROOT/node/bin/bin/node" || { echo "node binary missing"; exit 1; }
+          "$ROOT/node/bin/bin/node" --version
 
       - name: Download portable Node runtime (windows)
         if: matrix.platform == 'windows'
@@ -116,6 +96,46 @@ jobs:
           unzip -q /tmp/node.zip -d /tmp/node-extract
           cp /tmp/node-extract/${{ steps.node_archive.outputs.dirname }}/node.exe "$ROOT/node/node.exe"
           test -f "$ROOT/node/node.exe" || { echo "node.exe missing"; exit 1; }
+          "$ROOT/node/node.exe" --version
+
+      # ---- Stage the package skeleton ----
+      - name: Stage package skeleton
+        shell: bash
+        run: |
+          ROOT="$GITHUB_WORKSPACE/build/${{ matrix.asset_name }}"
+          mkdir -p "$ROOT/server" "$ROOT/web"
+          cp -R backend/dist "$ROOT/server/dist"
+          cp backend/package.json "$ROOT/server/package.json"
+          cp -R frontend/dist "$ROOT/web/dist"
+          cp packaging/README.txt "$ROOT/README.txt"
+
+      # ---- Install backend runtime deps, compiling native addons against the
+      #      BUNDLED node so the ABI matches at runtime (critical for better-sqlite3).
+      - name: Install backend runtime deps (unix, against bundled node)
+        if: matrix.platform != 'windows'
+        shell: bash
+        run: |
+          ROOT="$GITHUB_WORKSPACE/build/${{ matrix.asset_name }}"
+          BUNDLED_NODE="$ROOT/node/bin/bin/node"
+          # Put the bundled node first on PATH so npm rebuild picks it up.
+          export PATH="$(dirname "$BUNDLED_NODE"):$PATH"
+          cd "$ROOT/server"
+          # Install using the bundled node, then force a rebuild to be safe.
+          "$BUNDLED_NODE" "$(command -v npm)" install --omit=dev --no-audit --no-fund
+          "$BUNDLED_NODE" "$(command -v npm)" rebuild better-sqlite3
+          echo "Installed $(ls node_modules | wc -l) packages"
+
+      - name: Install backend runtime deps (windows, against bundled node)
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: |
+          ROOT="$GITHUB_WORKSPACE/build/${{ matrix.asset_name }}"
+          BUNDLED_NODE="$ROOT/node/node.exe"
+          export PATH="$(dirname "$BUNDLED_NODE"):$PATH"
+          cd "$ROOT/server"
+          "$BUNDLED_NODE" "$(command -v npm)" install --omit=dev --no-audit --no-fund
+          "$BUNDLED_NODE" "$(command -v npm)" rebuild better-sqlite3
+          echo "Installed $(ls node_modules | wc -l) packages"
 
       # ---- Add launcher scripts ----
       - name: Add launcher scripts (unix)
@@ -133,17 +153,37 @@ jobs:
           ROOT="$GITHUB_WORKSPACE/build/${{ matrix.asset_name }}"
           cp "$GITHUB_WORKSPACE/scripts/start.bat" "$ROOT/start.bat"
 
-      # ---- Smoke test: the staged server actually boots ----
-      - name: Smoke test server boots
+      # ---- Smoke test: boot the staged server WITH THE BUNDLED NODE so we
+      #      actually verify the native module loads at runtime.
+      - name: Smoke test server boots (unix, bundled node)
+        if: matrix.platform != 'windows'
         shell: bash
         env:
           CLAUDE_UI_ROOT: ${{ github.workspace }}/build/${{ matrix.asset_name }}
           PORT: '3999'
         run: |
           ROOT="$GITHUB_WORKSPACE/build/${{ matrix.asset_name }}"
-          node "$ROOT/server/dist/server.js" > /tmp/smoke.log 2>&1 &
+          "$ROOT/node/bin/bin/node" "$ROOT/server/dist/server.js" > /tmp/smoke.log 2>&1 &
           SVPID=$!
           sleep 8
+          if curl -s http://localhost:3999/api/health | grep -q '"ok":true'; then
+            echo "Smoke test PASSED (bundled node boots server + native module)"
+          else
+            echo "Smoke test FAILED — log:"; cat /tmp/smoke.log; exit 1
+          fi
+          kill $SVPID 2>/dev/null || true
+
+      - name: Smoke test server boots (windows, bundled node)
+        if: matrix.platform == 'windows'
+        shell: bash
+        env:
+          CLAUDE_UI_ROOT: ${{ github.workspace }}/build/${{ matrix.asset_name }}
+          PORT: '3999'
+        run: |
+          ROOT="$GITHUB_WORKSPACE/build/${{ matrix.asset_name }}"
+          "$ROOT/node/node.exe" "$ROOT/server/dist/server.js" > /tmp/smoke.log 2>&1 &
+          SVPID=$!
+          sleep 10
           if curl -s http://localhost:3999/api/health | grep -q '"ok":true'; then
             echo "Smoke test PASSED"
           else
