@@ -117,12 +117,14 @@ jobs:
         run: |
           ROOT="$GITHUB_WORKSPACE/build/${{ matrix.asset_name }}"
           BUNDLED_NODE="$ROOT/node/bin/bin/node"
-          # Put the bundled node first on PATH so npm rebuild picks it up.
+          # Use the npm CLI that ships inside the bundled node runtime, so the
+          # build node and the install/rebuild node are guaranteed identical.
+          BUNDLED_NPM="$ROOT/node/bin/lib/node_modules/npm/bin/npm-cli.js"
+          test -f "$BUNDLED_NPM" || { echo "bundled npm-cli.js not found"; find "$ROOT/node/bin" -name 'npm-cli.js' | head; exit 1; }
           export PATH="$(dirname "$BUNDLED_NODE"):$PATH"
           cd "$ROOT/server"
-          # Install using the bundled node, then force a rebuild to be safe.
-          "$BUNDLED_NODE" "$(command -v npm)" install --omit=dev --no-audit --no-fund
-          "$BUNDLED_NODE" "$(command -v npm)" rebuild better-sqlite3
+          "$BUNDLED_NODE" "$BUNDLED_NPM" install --omit=dev --no-audit --no-fund
+          "$BUNDLED_NODE" "$BUNDLED_NPM" rebuild better-sqlite3
           echo "Installed $(ls node_modules | wc -l) packages"
 
       - name: Install backend runtime deps (windows, against bundled node)
@@ -131,10 +133,13 @@ jobs:
         run: |
           ROOT="$GITHUB_WORKSPACE/build/${{ matrix.asset_name }}"
           BUNDLED_NODE="$ROOT/node/node.exe"
+          # The bundled node ships its own npm CLI at node_modules/npm/bin/npm-cli.js
+          BUNDLED_NPM="$ROOT/node/node_modules/npm/bin/npm-cli.js"
+          test -f "$BUNDLED_NPM" || { echo "bundled npm-cli.js not found"; ls "$ROOT/node"; exit 1; }
           export PATH="$(dirname "$BUNDLED_NODE"):$PATH"
           cd "$ROOT/server"
-          "$BUNDLED_NODE" "$(command -v npm)" install --omit=dev --no-audit --no-fund
-          "$BUNDLED_NODE" "$(command -v npm)" rebuild better-sqlite3
+          "$BUNDLED_NODE" "$BUNDLED_NPM" install --omit=dev --no-audit --no-fund
+          "$BUNDLED_NODE" "$BUNDLED_NPM" rebuild better-sqlite3
           echo "Installed $(ls node_modules | wc -l) packages"
 
       # ---- Add launcher scripts ----
