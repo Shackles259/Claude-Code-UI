@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import {
@@ -17,6 +18,10 @@ import { getProject } from '../services/project.js';
  * Open a directory (or a file's containing folder) in the OS file manager.
  * Cross-platform: Finder (macOS), Explorer (Windows), xdg-open (Linux).
  */
+function getUserHome(): string {
+  return os.homedir();
+}
+
 function revealInFileManager(target: string, isFile: boolean): void {
   const dir = isFile ? path.dirname(target) : target;
   switch (process.platform) {
@@ -139,5 +144,35 @@ export async function fileRoutes(app: FastifyInstance): Promise<void> {
     const stat = fs.statSync(res.abs);
     revealInFileManager(res.abs, stat.isFile());
     return { ok: true };
+  });
+
+  // Browse the filesystem to pick an existing directory (for "open folder").
+  // Returns subdirectories of the given path (or user home / drives if empty).
+  app.get('/api/browse', async (req, reply) => {
+    const target = (req.query as { path?: string }).path;
+    let dir: string;
+    if (target) {
+      dir = path.resolve(target);
+      if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+        return reply.code(404).send({ error: '目录不存在' });
+      }
+    } else {
+      dir = getUserHome();
+    }
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+      return reply.code(403).send({ error: `无法读取: ${String(err)}` });
+    }
+    const dirs = entries
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+      .map((e) => ({ name: e.name, path: path.join(dir, e.name) }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    return {
+      current: dir,
+      parent: path.dirname(dir) !== dir ? path.dirname(dir) : null,
+      dirs,
+    };
   });
 }

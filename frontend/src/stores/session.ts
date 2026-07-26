@@ -4,17 +4,22 @@ import { api } from '@/api';
 import { SessionSocket } from '@/api/ws';
 import type { SessionRecord, BridgeEvent } from '@/types';
 
+/** Ordered timeline parts for an assistant (or user) message. */
+export type MessagePart =
+  | { type: 'text'; id: string; text: string }
+  | { type: 'tool'; toolUseId: string };
+
 /** A UI-side message aggregated from bridge events. */
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
-  /** Rendered text (markdown). For assistant this accumulates text blocks. */
+  /** Flattened text for copy / search. */
   text: string;
-  /** Tool calls associated with this message. */
+  /** Chronological parts (text interleaved with tools). */
+  parts: MessagePart[];
+  /** Tool call lookup by toolUseId. */
   tools: ToolCall[];
-  /** Metadata: cost, duration, etc. for the final result. */
   meta?: { costUsd?: number; durationMs?: number; isError?: boolean };
-  /** Streaming flag. */
   streaming?: boolean;
   createdAt: number;
 }
@@ -28,23 +33,46 @@ export interface ToolCall {
   done?: boolean;
 }
 
+function emptyAssistant(id: string): ChatMessage {
+  return {
+    id,
+    role: 'assistant',
+    text: '',
+    parts: [],
+    tools: [],
+    streaming: true,
+    createdAt: Date.now(),
+  };
+}
+
+/** Append streaming text into the last text part, or open a new one after a tool. */
+function appendTextPart(msg: ChatMessage, delta: string): void {
+  const last = msg.parts[msg.parts.length - 1];
+  if (last && last.type === 'text') {
+    last.text += delta;
+  } else {
+    msg.parts.push({ type: 'text', id: `t-${Date.now()}-${msg.parts.length}`, text: delta });
+  }
+  msg.text += delta;
+}
+
+function ensureToolPart(msg: ChatMessage, toolUseId: string): void {
+  if (!msg.parts.some((p) => p.type === 'tool' && p.toolUseId === toolUseId)) {
+    msg.parts.push({ type: 'tool', toolUseId });
+  }
+}
+
 export const useSessionStore = defineStore('session', () => {
   const sessions = ref<SessionRecord[]>([]);
-  /** Map of sessionId -> messages. */
   const messagesBySession = ref<Record<string, ChatMessage[]>>({});
-  /** Map of sessionId -> active socket. */
   const sockets = ref<Record<string, SessionSocket>>({});
-  /** Map of sessionId -> connection status. */
   const statusBySession = ref<Record<string, 'connecting' | 'open' | 'closed' | 'error'>>({});
-  /** Map of sessionId -> model (from init event). */
   const modelBySession = ref<Record<string, string>>({});
   const streaming = ref<Record<string, boolean>>({});
-  /** Per-session unsent draft text, survives session switching/unmount. */
   const drafts = ref<Record<string, string>>({});
 
   const currentSessionId = ref<string | null>(null);
 
-  /** Draft for the currently active session (or the sessionless buffer). */
   const currentDraft = computed<string>({
     get: () => (currentSessionId.value ? drafts.value[currentSessionId.value] || '' : ''),
     set: (v) => {
@@ -78,14 +106,11 @@ export const useSessionStore = defineStore('session', () => {
     delete messagesBySession.value[id];
   }
 
-  /** Connect (or reconnect) the WebSocket for a session. */
   function connect(id: string): void {
     if (sockets.value[id]) return;
     const sock = new SessionSocket(id);
     sock.onStatus((st) => {
       statusBySession.value[id] = st;
-      // If the socket drops while a turn is streaming, un-stick the streaming
-      // flag so the input isn't permanently locked on the "中断" button.
       if (st === 'closed' || st === 'error') {
         streaming.value[id] = false;
         const msgs = messagesBySession.value[id];
@@ -100,13 +125,8 @@ export const useSessionStore = defineStore('session', () => {
     sock.onEvent((ev) => handleEvent(id, ev));
     sock.onControl((control) => {
       if (control === 'replay_start') {
-        // Server is about to replay buffered history: reset the message list
-        // so we rebuild from scratch instead of duplicating on reconnect.
         messagesBySession.value[id] = [];
       } else if (control === 'replayed') {
-        // Replay finished: any assistant message still flagged streaming is
-        // from a truncated buffer (no closing result event). Clear it so the
-        // typing indicator doesn't spin forever on stale history.
         const msgs = messagesBySession.value[id];
         if (msgs) {
           let changed = false;
@@ -118,7 +138,6 @@ export const useSessionStore = defineStore('session', () => {
           }
           if (changed) messagesBySession.value[id] = [...msgs];
         }
-        // A replayed history means no turn is currently running here.
         streaming.value[id] = false;
       }
     });
@@ -134,18 +153,21 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  /** Send a chat message. */
-  function sendMessage(sessionId: string, content: string, attachments?: Array<{ path: string; isImage: boolean }>): void {
+  function sendMessage(
+    sessionId: string,
+    content: string,
+    attachments?: Array<{ path: string; isImage: boolean }>,
+  ): void {
     const sock = sockets.value[sessionId];
     if (!sock) {
       connect(sessionId);
     }
-    // Optimistic: append the user message locally.
     const list = messagesBySession.value[sessionId] || [];
     list.push({
       id: `u-${Date.now()}`,
       role: 'user',
       text: content,
+      parts: [{ type: 'text', id: `t-${Date.now()}`, text: content }],
       tools: [],
       createdAt: Date.now(),
     });
@@ -155,11 +177,9 @@ export const useSessionStore = defineStore('session', () => {
     const s = sockets.value[sessionId];
     if (s) s.send({ type: 'chat', content, attachments });
 
-    // Auto-name the session from the first user message if it's still default.
     autoNameSession(sessionId, content);
   }
 
-  /** If the session still has its default title, derive one from the content. */
   function autoNameSession(sessionId: string, content: string): void {
     const rec = sessions.value.find((s) => s.id === sessionId);
     if (!rec || (rec.title && rec.title !== '新会话')) return;
@@ -170,7 +190,6 @@ export const useSessionStore = defineStore('session', () => {
     }).catch(() => { /* non-critical */ });
   }
 
-  /** Rename a session (user-initiated). */
   async function renameSession(sessionId: string, title: string): Promise<void> {
     const res = await api.renameSession(sessionId, title);
     const idx = sessions.value.findIndex((s) => s.id === sessionId);
@@ -182,7 +201,6 @@ export const useSessionStore = defineStore('session', () => {
     if (sock) sock.send({ type: 'interrupt' });
   }
 
-  /** Process a bridge event into the message list. */
   function handleEvent(sessionId: string, ev: BridgeEvent): void {
     const list = messagesBySession.value[sessionId] || [];
 
@@ -192,66 +210,44 @@ export const useSessionStore = defineStore('session', () => {
         break;
       }
       case 'streaming_text': {
-        // Append token delta to the assistant message matching messageId.
         let msg = list.find((m) => m.id === ev.messageId && m.role === 'assistant');
         if (!msg) {
-          msg = {
-            id: ev.messageId || `a-${Date.now()}`,
-            role: 'assistant',
-            text: '',
-            tools: [],
-            streaming: true,
-            createdAt: Date.now(),
-          };
+          msg = emptyAssistant(ev.messageId || `a-${Date.now()}`);
           list.push(msg);
         }
-        msg.text += ev.text;
+        appendTextPart(msg, ev.text);
+        msg.streaming = true;
         messagesBySession.value[sessionId] = [...list];
         break;
       }
       case 'message_done': {
         const msg = list.find((m) => m.id === ev.messageId && m.role === 'assistant');
-        // A message_done only marks a single assistant turn finished, not the
-        // whole round (tools may follow). Keep streaming flag until 'result'.
         if (msg && !msg.tools.length) msg.streaming = false;
         messagesBySession.value[sessionId] = [...list];
         break;
       }
       case 'text': {
-        // Finalized text (non-streaming fallback). Only used if no deltas seen.
         let msg = list.find((m) => m.id === ev.messageId && m.role === 'assistant');
         if (!msg) {
-          msg = {
-            id: ev.messageId || `a-${Date.now()}`,
-            role: 'assistant',
-            text: ev.text,
-            tools: [],
-            streaming: false,
-            createdAt: Date.now(),
-          };
+          msg = emptyAssistant(ev.messageId || `a-${Date.now()}`);
+          msg.streaming = false;
+          msg.text = ev.text;
+          msg.parts = [{ type: 'text', id: `t-${Date.now()}`, text: ev.text }];
           list.push(msg);
+        } else if (!msg.text) {
+          appendTextPart(msg, ev.text);
         }
         messagesBySession.value[sessionId] = [...list];
         break;
       }
       case 'tool_use': {
-        // Attach to the assistant message of this round. If input is empty and a
-        // tool with this id already exists, this is the finalized version: update it.
         let last = [...list].reverse().find((m) => m.role === 'assistant' && m.id === ev.messageId);
         if (!last) {
-          last = {
-            id: ev.messageId || `a-${Date.now()}`,
-            role: 'assistant',
-            text: '',
-            tools: [],
-            streaming: true,
-            createdAt: Date.now(),
-          };
+          last = emptyAssistant(ev.messageId || `a-${Date.now()}`);
           list.push(last);
         }
         const existing = last.tools.find((t) => t.toolUseId === ev.toolUseId);
         if (existing) {
-          // Finalized tool_use: fill in the parsed input.
           if (ev.input && Object.keys(ev.input).length) existing.input = ev.input;
         } else {
           last.tools.push({
@@ -260,6 +256,7 @@ export const useSessionStore = defineStore('session', () => {
             input: ev.input,
             done: false,
           });
+          ensureToolPart(last, ev.toolUseId);
         }
         last.streaming = true;
         messagesBySession.value[sessionId] = [...list];
@@ -281,9 +278,6 @@ export const useSessionStore = defineStore('session', () => {
         break;
       }
       case 'result': {
-        // The round is over: clear the streaming flag on EVERY assistant
-        // message in this round (text → tool → text chains may leave
-        // intermediate messages still flagged streaming).
         let lastAssistant: ChatMessage | undefined;
         for (const m of list) {
           if (m.role === 'assistant') {
@@ -297,8 +291,9 @@ export const useSessionStore = defineStore('session', () => {
             durationMs: ev.durationMs,
             isError: ev.isError,
           };
-          // If no text was captured but result exists, use it.
-          if (!lastAssistant.text && ev.result) lastAssistant.text = ev.result;
+          if (!lastAssistant.text && ev.result) {
+            appendTextPart(lastAssistant, ev.result);
+          }
         }
         streaming.value[sessionId] = false;
         messagesBySession.value[sessionId] = [...list];
@@ -309,7 +304,8 @@ export const useSessionStore = defineStore('session', () => {
         list.push({
           id: `err-${Date.now()}`,
           role: 'system',
-          text: `⚠️ ${ev.error}`,
+          text: ev.error,
+          parts: [{ type: 'text', id: `t-${Date.now()}`, text: ev.error }],
           tools: [],
           createdAt: Date.now(),
         });

@@ -8,12 +8,28 @@ import type {
 } from '@/types';
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  // Fastify rejects empty bodies with Content-Type: application/json.
+  // Only attach an empty JSON body for methods that typically send one.
+  const method = (init?.method || 'GET').toUpperCase();
+  const needsJsonBody = !['GET', 'HEAD'].includes(method);
+  const finalInit: RequestInit = { ...init };
+
+  const headers: Record<string, string> = {
+    ...(init?.headers as Record<string, string> || {}),
+  };
+
+  if (needsJsonBody) {
+    if (!finalInit.body) {
+      finalInit.body = JSON.stringify({});
+    }
+    if (!headers['Content-Type'] && !headers['content-type']) {
+      headers['Content-Type'] = 'application/json';
+    }
+  }
+
   const res = await fetch(url, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers || {}),
-    },
+    ...finalInit,
+    headers,
   });
   if (!res.ok) {
     let detail = res.statusText;
@@ -79,6 +95,10 @@ export const api = {
     }),
   revealProject: (projectId: string) =>
     request<{ ok: boolean }>(`/api/projects/${projectId}/reveal`, { method: 'POST' }),
+  browse: (dir?: string) =>
+    request<{ current: string; parent: string | null; dirs: Array<{ name: string; path: string }> }>(
+      `/api/browse${dir ? `?path=${encodeURIComponent(dir)}` : ''}`,
+    ),
   revealFile: (projectId: string, path: string) =>
     request<{ ok: boolean }>(`/api/projects/${projectId}/reveal-file`, {
       method: 'POST',

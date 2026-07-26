@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
 import {
-  NTree, NButton, NSpace, NIcon, NSpin, NPopconfirm, NInput,
+  NTree, NButton, NSpace, NSpin, NPopconfirm, NInput, NScrollbar,
   useMessage,
 } from 'naive-ui';
 import type { TreeOption } from 'naive-ui';
@@ -10,7 +10,6 @@ import type { FileNode } from '@/types';
 
 const props = defineProps<{
   projectId: string;
-  /** Path relative to project root that should be highlighted. */
   activePath?: string;
 }>();
 const emit = defineEmits<{
@@ -62,7 +61,6 @@ async function loadTree(): Promise<void> {
   try {
     const res = await api.getTree(props.projectId, 5);
     rawTree.value = res.tree;
-    // Expand top-level dirs by default.
     expandedKeys.value = res.tree.children
       ?.filter((c) => c.type === 'directory')
       .map((c) => c.path) || [];
@@ -75,12 +73,21 @@ async function loadTree(): Promise<void> {
 
 watch(() => props.projectId, loadTree, { immediate: true });
 
-function onSelect(keys: string[], option: Array<TreeOption | null>) {
+function onSelect(keys: string[]) {
   selectedKeys.value = keys;
-  const opt = option[0];
-  if (opt && (opt as TreeOption & { _type?: string })._type === 'file') {
-    emit('select', opt.key as string);
+  const key = keys[0];
+  if (!key || !rawTree.value) return;
+  const node = findNode(rawTree.value, key);
+  if (node?.type === 'file') emit('select', key);
+}
+
+function findNode(node: FileNode, path: string): FileNode | null {
+  if (node.path === path) return node;
+  for (const c of node.children || []) {
+    const hit = findNode(c, path);
+    if (hit) return hit;
   }
+  return null;
 }
 
 function nodeProps({ option }: { option: TreeOption }) {
@@ -140,20 +147,27 @@ watch(() => props.activePath, (p) => {
 <template>
   <div class="file-tree">
     <div class="tree-toolbar">
-      <NInput v-model:value="filter" size="tiny" placeholder="过滤..." clearable />
+      <NInput v-model:value="filter" size="tiny" placeholder="过滤…" clearable />
       <NSpace :size="2">
-        <NButton size="tiny" quaternary @click="revealSelected" :title="selectedKeys.length ? '在文件夹中显示' : '打开项目目录'">📁</NButton>
-        <NButton size="tiny" quaternary @click="refresh" title="刷新">↻</NButton>
+        <NButton
+          size="tiny"
+          quaternary
+          :title="selectedKeys.length ? '在文件夹中显示' : '打开项目目录'"
+          @click="revealSelected"
+        >
+          定位
+        </NButton>
+        <NButton size="tiny" quaternary title="刷新" @click="refresh">刷新</NButton>
         <NPopconfirm v-if="selectedKeys.length" @positive-click="deleteSelected">
           <template #trigger>
-            <NButton size="tiny" quaternary type="error" title="删除选中">🗑</NButton>
+            <NButton size="tiny" quaternary type="error" title="删除选中">删</NButton>
           </template>
           删除「{{ selectedKeys[0] }}」？
         </NPopconfirm>
       </NSpace>
     </div>
     <NSpin v-if="loading" size="small" style="margin: 20px auto; display: block;" />
-    <NScrollbar v-else style="max-height: 100%;">
+    <NScrollbar v-else class="tree-scroll">
       <NTree
         :data="treeData"
         :expanded-keys="expandedKeys"
@@ -164,7 +178,7 @@ watch(() => props.activePath, (p) => {
         selectable
         :node-props="nodeProps"
         @update:expanded-keys="(k) => (expandedKeys = k as string[])"
-        @update:selected-keys="(k) => onSelect(k as string[], [])"
+        @update:selected-keys="(k) => onSelect(k as string[])"
       />
     </NScrollbar>
   </div>
@@ -182,8 +196,14 @@ watch(() => props.activePath, (p) => {
   gap: 4px;
   padding: 6px 8px;
   border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
 .tree-toolbar :deep(.n-input) {
   flex: 1;
+}
+.tree-scroll {
+  flex: 1;
+  min-height: 0;
+  padding: 4px 0;
 }
 </style>

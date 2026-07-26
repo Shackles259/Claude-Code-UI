@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick } from 'vue';
-import { NText, useMessage } from 'naive-ui';
+import { useMessage } from 'naive-ui';
 import ToolCallCard from './ToolCallCard.vue';
 import { renderMarkdown, renderMermaidIn } from '@/utils/markdown';
-import type { ChatMessage } from '@/stores/session';
+import type { ChatMessage, ToolCall, MessagePart } from '@/stores/session';
 
 const props = defineProps<{ message: ChatMessage }>();
 
@@ -11,15 +11,42 @@ const notify = useMessage();
 
 const isUser = computed(() => props.message.role === 'user');
 const isSystem = computed(() => props.message.role === 'system');
-const html = computed(() => renderMarkdown(props.message.text));
+const roleLabel = computed(() => (isUser.value ? '你' : isSystem.value ? '系统' : 'Claude'));
 
 const bubbleRef = ref<HTMLElement | null>(null);
 
-// Only render mermaid diagrams once the message is no longer streaming,
-// to avoid spawning a render attempt on every token delta.
+const timeline = computed(() => {
+  const parts = props.message.parts?.length
+    ? props.message.parts
+    : fallbackParts(props.message);
+  return parts.map((p) => resolvePart(p, props.message.tools));
+});
+
+function fallbackParts(msg: ChatMessage): MessagePart[] {
+  const parts: MessagePart[] = [];
+  for (const t of msg.tools) {
+    parts.push({ type: 'tool', toolUseId: t.toolUseId });
+  }
+  if (msg.text) {
+    parts.push({ type: 'text', id: 'fallback-text', text: msg.text });
+  }
+  return parts;
+}
+
+function resolvePart(
+  part: MessagePart,
+  tools: ToolCall[],
+): { kind: 'text'; id: string; html: string } | { kind: 'tool'; tool: ToolCall } | null {
+  if (part.type === 'text') {
+    return { kind: 'text', id: part.id, html: renderMarkdown(part.text) };
+  }
+  const tool = tools.find((t) => t.toolUseId === part.toolUseId);
+  return tool ? { kind: 'tool', tool } : null;
+}
+
 watch(
-  () => [html.value, props.message.streaming] as const,
-  ([, streaming]) => {
+  () => [props.message.parts, props.message.text, props.message.streaming] as const,
+  ([, , streaming]) => {
     if (streaming) return;
     nextTick(() => {
       if (bubbleRef.value) void renderMermaidIn(bubbleRef.value);
@@ -44,34 +71,42 @@ function formatDuration(v: unknown): string {
 
 <template>
   <div class="message" :class="message.role">
-    <div class="avatar">
-      <template v-if="isUser">🧑</template>
-      <template v-else-if="isSystem">⚠️</template>
-      <template v-else>🤖</template>
-    </div>
-    <div ref="bubbleRef" class="bubble">
-      <div class="bubble-header">
-        <NText depth="3" style="font-size: 12px;">
-          {{ isUser ? '你' : isSystem ? '系统' : 'Claude' }}
-        </NText>
-        <button v-if="message.text" class="copy-btn" title="复制" @click="copyText">复制</button>
+    <div class="rail" aria-hidden="true"></div>
+    <div ref="bubbleRef" class="body">
+      <div class="header">
+        <span class="role">{{ roleLabel }}</span>
+        <button
+          v-if="message.text"
+          type="button"
+          class="copy-btn"
+          title="复制"
+          @click="copyText"
+        >
+          复制
+        </button>
       </div>
-      <div class="tools-list">
-        <ToolCallCard v-for="t in message.tools" :key="t.toolUseId" :tool="t" />
+
+      <div class="timeline">
+        <template v-for="(item, idx) in timeline" :key="idx">
+          <div
+            v-if="item?.kind === 'text'"
+            class="markdown-body text-part"
+            v-html="item.html"
+          />
+          <ToolCallCard
+            v-else-if="item?.kind === 'tool'"
+            :tool="item.tool"
+          />
+        </template>
       </div>
-      <div
-        v-if="message.text"
-        class="markdown-body"
-        v-html="html"
-      />
-      <div v-if="message.streaming" class="typing-indicator">
+
+      <div v-if="message.streaming" class="typing-indicator" aria-label="正在输出">
         <span></span><span></span><span></span>
       </div>
+
       <div v-if="message.meta" class="meta">
-        <span v-if="message.meta.costUsd !== undefined && message.meta.costUsd !== null">
-          {{ formatCost(message.meta.costUsd) }}
-        </span>
-        <span v-if="message.meta.durationMs !== undefined && message.meta.durationMs !== null">
+        <span v-if="message.meta.costUsd != null">{{ formatCost(message.meta.costUsd) }}</span>
+        <span v-if="message.meta.durationMs != null">
           · {{ formatDuration(message.meta.durationMs) }}
         </span>
       </div>
@@ -83,50 +118,49 @@ function formatDuration(v: unknown): string {
 .message {
   display: flex;
   gap: 12px;
-  padding: 12px 0;
+  padding: 14px 0;
 }
-.message.user {
-  flex-direction: row-reverse;
-}
-.avatar {
-  width: 28px;
-  height: 28px;
+.rail {
+  width: 3px;
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 18px;
+  border-radius: 2px;
+  margin-top: 4px;
+  align-self: stretch;
+  min-height: 20px;
+  background: transparent;
 }
-.bubble {
-  max-width: 78%;
+.message.user .rail {
+  background: var(--accent);
+}
+.message.assistant .rail {
+  background: var(--border);
+}
+.message.system .rail {
+  background: var(--danger);
+}
+.body {
+  flex: 1;
   min-width: 0;
 }
-.message.user .bubble {
-  background: var(--accent);
-  color: var(--accent-fg);
-  border-radius: 12px 12px 2px 12px;
-  padding: 8px 14px;
-}
-.message.assistant .bubble,
-.message.system .bubble {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: 12px 12px 12px 2px;
-  padding: 8px 14px;
-}
-.message.system .bubble {
-  border-color: var(--danger);
-}
-.bubble-header {
+.header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 2px;
+  margin-bottom: 4px;
 }
-.message.user .bubble-header :deep(.n-text) {
-  color: var(--accent-fg) !important;
-  opacity: 0.85;
+.role {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.message.user .role {
+  color: var(--accent);
+}
+.message.system .role {
+  color: var(--danger);
 }
 .copy-btn {
   background: transparent;
@@ -136,32 +170,49 @@ function formatDuration(v: unknown): string {
   opacity: 0;
   transition: opacity 0.15s;
 }
-.message.user .copy-btn {
-  color: var(--accent-fg);
+.body:hover .copy-btn {
+  opacity: 0.75;
 }
-.bubble:hover .copy-btn {
-  opacity: 0.7;
+.copy-btn:hover {
+  color: var(--text);
 }
-.tools-list {
-  margin-bottom: 4px;
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.text-part {
+  line-height: 1.6;
+}
+.message.user .text-part {
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--border));
+  border-radius: var(--radius-lg);
+  padding: 10px 12px;
+}
+.message.system .text-part {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--border));
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  font-size: 13px;
 }
 .meta {
-  margin-top: 6px;
+  margin-top: 8px;
   font-size: 11px;
   color: var(--text-muted);
-  opacity: 0.7;
-}
-.message.user .meta {
-  color: var(--accent-fg);
+  opacity: 0.75;
+  font-family: var(--mono);
 }
 .typing-indicator {
   display: inline-flex;
   gap: 3px;
-  padding: 4px 0;
+  padding: 6px 0 2px;
 }
 .typing-indicator span {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
   background: var(--text-muted);
   animation: blink 1.4s infinite both;

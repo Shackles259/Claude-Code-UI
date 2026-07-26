@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
-import { NInput, NButton, NSpace, NUpload, NTag, useMessage } from 'naive-ui';
+import { NInput, NButton, NUpload, NTag, useMessage } from 'naive-ui';
 import type { UploadCustomRequestOptions } from 'naive-ui';
 import { api } from '@/api';
 import { useSessionStore } from '@/stores/session';
@@ -17,8 +17,6 @@ const emit = defineEmits<{
 
 const message = useMessage();
 const sessionStore = useSessionStore();
-// Bind the textarea to the store-backed draft so unsent text survives
-// session switching and component unmount.
 const text = computed<string>({
   get: () => sessionStore.currentDraft,
   set: (v) => { sessionStore.currentDraft = v; },
@@ -37,15 +35,12 @@ async function handleSend(): Promise<void> {
 }
 
 function onKeydown(e: KeyboardEvent): void {
-  // Enter to send, Shift+Enter for newline.
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
     void handleSend();
   }
 }
 
-// Honor the NUpload custom-request contract: call onFinish/onError so the
-// internal file list transitions out of "uploading" instead of leaking.
 async function handleUpload({ file, onFinish, onError }: UploadCustomRequestOptions): Promise<void> {
   if (!file.file) return;
   try {
@@ -84,44 +79,48 @@ function removeAttachment(idx: number): void {
         size="small"
         @close="removeAttachment(i)"
       >
-        {{ a.isImage ? '🖼' : '📄' }} {{ a.name }}
+        {{ a.isImage ? '图片' : '文件' }} · {{ a.name }}
       </NTag>
     </div>
     <div class="input-row">
-      <NUpload
-        :show-file-list="false"
-        :default-upload="true"
-        :custom-request="handleUpload"
-        multiple
-      >
-        <NButton quaternary circle title="上传文件">
-          <template #icon>📎</template>
+      <div class="input-actions">
+        <NUpload
+          :show-file-list="false"
+          :default-upload="true"
+          :custom-request="handleUpload"
+          multiple
+        >
+          <NButton quaternary size="small" title="上传文件">附件</NButton>
+        </NUpload>
+      </div>
+      <div class="input-field">
+        <NInput
+          v-model:value="text"
+          type="textarea"
+          :autosize="{ minRows: 1, maxRows: 6 }"
+          placeholder="输入消息，Enter 发送，Shift+Enter 换行"
+          :disabled="disabled"
+          @keydown="onKeydown"
+        />
+      </div>
+      <div class="input-actions">
+        <NButton
+          v-if="!streaming"
+          type="primary"
+          :disabled="!canSend || disabled"
+          @click="handleSend"
+        >
+          发送
         </NButton>
-      </NUpload>
-      <NInput
-        v-model:value="text"
-        type="textarea"
-        :autosize="{ minRows: 1, maxRows: 6 }"
-        placeholder="输入消息，Enter 发送，Shift+Enter 换行"
-        :disabled="disabled"
-        @keydown="onKeydown"
-      />
-      <NButton
-        v-if="!streaming"
-        type="primary"
-        :disabled="!canSend || disabled"
-        @click="handleSend"
-      >
-        发送
-      </NButton>
-      <NButton
-        v-else
-        type="error"
-        ghost
-        @click="emit('interrupt')"
-      >
-        中断
-      </NButton>
+        <NButton
+          v-else
+          type="error"
+          ghost
+          @click="emit('interrupt')"
+        >
+          中断
+        </NButton>
+      </div>
     </div>
   </div>
 </template>
@@ -129,21 +128,41 @@ function removeAttachment(idx: number): void {
 <style scoped>
 .chat-input {
   border-top: 1px solid var(--border);
-  padding: 12px 16px;
-  background: var(--bg);
+  padding: 12px 16px 14px;
+  background: var(--bg-sidebar);
 }
 .attachments {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 8px;
+  max-width: 820px;
+  margin-left: auto;
+  margin-right: auto;
 }
 .input-row {
   display: flex;
   align-items: flex-end;
   gap: 8px;
+  width: 100%;
+  max-width: 820px;
+  margin: 0 auto;
 }
-.input-row :deep(.n-input) {
-  flex: 1;
+.input-actions {
+  flex: 0 0 auto;
+}
+.input-actions :deep(.n-upload) {
+  width: auto;
+  display: inline-block;
+}
+.input-field {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.input-field :deep(.n-input) {
+  width: 100%;
+}
+.input-field :deep(.n-input .n-input__textarea-el) {
+  background: var(--bg-input) !important;
 }
 </style>

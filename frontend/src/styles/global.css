@@ -1,30 +1,42 @@
 :root {
   --app-font-size: 14px;
-  --bg: #ffffff;
-  --bg-elevated: #f7f7f8;
-  --bg-sidebar: #fafafa;
-  --text: #1f2328;
+  --bg: #f4f5f7;
+  --bg-elevated: #ffffff;
+  --bg-sidebar: #eceef2;
+  --bg-input: #ffffff;
+  --text: #1a1d24;
   --text-muted: #6b7280;
-  --border: #e5e7eb;
-  --accent: #d97706;
+  --border: #d8dce3;
+  --accent: #c2410c;
+  --accent-soft: rgba(194, 65, 12, 0.12);
   --accent-fg: #ffffff;
   --danger: #dc2626;
   --success: #16a34a;
-  --code-bg: #f3f4f6;
+  --warning: #d97706;
+  --code-bg: #eef0f4;
+  --header-h: 44px;
+  --rail-w: 260px;
+  --panel-w: 420px;
+  --mono: 'SF Mono', 'Fira Code', Menlo, Consolas, ui-monospace, monospace;
+  --radius: 6px;
+  --radius-lg: 10px;
 }
 
 :root[data-theme='dark'] {
-  --bg: #1a1a1a;
-  --bg-elevated: #242424;
-  --bg-sidebar: #1f1f1f;
-  --text: #e8e8e8;
-  --text-muted: #9ca3af;
-  --border: #2d2d2d;
-  --accent: #f59e0b;
-  --accent-fg: #1a1a1a;
+  --bg: #0f1115;
+  --bg-elevated: #161a22;
+  --bg-sidebar: #12151b;
+  --bg-input: #1a1f28;
+  --text: #e6e8ec;
+  --text-muted: #8b929e;
+  --border: #2a2f3a;
+  --accent: #e8950a;
+  --accent-soft: rgba(232, 149, 10, 0.14);
+  --accent-fg: #0f1115;
   --danger: #f87171;
   --success: #4ade80;
-  --code-bg: #161616;
+  --warning: #fbbf24;
+  --code-bg: #0c0e12;
 }
 
 * {
@@ -46,7 +58,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font-size: var(--app-font-size);
-  line-height: 1.6;
+  line-height: 1.55;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -74,13 +86,13 @@ a {
 .markdown-body pre {
   background: var(--code-bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   padding: 12px;
   overflow-x: auto;
   margin: 8px 0;
 }
 .markdown-body code {
-  font-family: 'SF Mono', 'Fira Code', Menlo, Consolas, monospace;
+  font-family: var(--mono);
   font-size: 0.9em;
 }
 .markdown-body :not(pre) > code {
@@ -102,6 +114,15 @@ a {
   padding-left: 12px;
   color: var(--text-muted);
   margin: 8px 0;
+}
+.markdown-body p {
+  margin: 0.4em 0;
+}
+.markdown-body p:first-child {
+  margin-top: 0;
+}
+.markdown-body p:last-child {
+  margin-bottom: 0;
 }
 
 button {
